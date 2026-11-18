@@ -1,0 +1,12 @@
+{
+  "metadata_version": 1,
+  "compat_version": "1.0",
+  "supported_devices": ["tplink,ex520-v1"],
+  "version": {
+    "dist": "OpenWrt",
+    "version": "SNAPSHOT",
+    "revision": "unknown",
+    "target": "mediatek/filogic",
+    "board": "tplink_ex520-v1"
+  }
+}

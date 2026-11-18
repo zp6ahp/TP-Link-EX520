@@ -1,0 +1,97 @@
+#!/bin/sh /etc/rc.common
+# Extract the per-device MT7981 EEPROM from the TP-Link misc_ro UBI volume
+# before mt7915e is loaded. The misc_ro MTD partition is marked read-only in
+# the DTS, so UBI attaches it in read-only mode and nothing is written to flash.
+#
+# Runs at START=09, i.e. before S10boot which calls kmodloader and loads
+# mt7915e. The extracted EEPROM is placed in /lib/firmware/updates/, which the
+# firmware loader searches before /lib/firmware/.
+
+START=09
+
+FW_DIR=/lib/firmware/updates/mediatek
+FW_FILE=$FW_DIR/mt7981_eeprom_mt7976_dbdc.bin
+MNT=/tmp/misc_ro
+TAG=mt7981-eeprom
+
+log() {
+	logger -t "$TAG" "$*"
+	echo "$TAG: $*" > /dev/kmsg 2>/dev/null
+}
+
+valid_eeprom() {
+	local f="$1" size
+
+	[ -f "$f" ] || return 1
+	size=$(wc -c < "$f" 2>/dev/null) || return 1
+	[ "$size" -ge 4096 ] || return 1
+
+	dd if="$f" bs=1 count=2 2>/dev/null > /tmp/.e2p.first2
+	printf '\201\171' > /tmp/.e2p.magic
+	cmp -s /tmp/.e2p.first2 /tmp/.e2p.magic
+}
+
+find_mtd() {
+	sed -n "s/^mtd\([0-9][0-9]*\):.*\"$1\".*/\1/p" /proc/mtd | head -n1
+}
+
+boot() {
+	local idx d attached src f mnted
+
+	# Already extracted on a previous boot (persistent overlay)?
+	if valid_eeprom "$FW_FILE"; then
+		return 0
+	fi
+
+	idx=$(find_mtd misc_ro)
+	[ -n "$idx" ] || { log "misc_ro partition not found"; return 0; }
+
+	mkdir -p "$FW_DIR" "$MNT"
+
+	for d in 0 1 2 3; do
+		if ubiattach -m "$idx" -d "$d" >/dev/null 2>&1; then
+			attached="$d"
+		fi
+		if mount -t ubifs -o ro "ubi$d:misc_ro" "$MNT" >/dev/null 2>&1; then
+			mnted=1
+			break
+		fi
+		if [ -n "$attached" ]; then
+			ubidetach -d "$attached" >/dev/null 2>&1
+			attached=""
+		fi
+	done
+
+	if [ -n "$mnted" ]; then
+		# The stock driver reads /var/run/misc/misc_ro/0x003A0000
+		for f in "$MNT/0x003A0000" "$MNT/e2p"; do
+			valid_eeprom "$f" && { src="$f"; break; }
+		done
+
+		# Fallback: scan the volume root for a file with the MT7981 magic
+		if [ -z "$src" ]; then
+			for f in "$MNT"/*; do
+				[ -f "$f" ] || continue
+				valid_eeprom "$f" && { src="$f"; break; }
+			done
+		fi
+
+		if [ -n "$src" ]; then
+			if dd if="$src" of="$FW_FILE" bs=4096 count=1 >/dev/null 2>&1; then
+				sync
+				log "EEPROM extracted from $src"
+			else
+				log "failed to copy EEPROM from $src"
+			fi
+		else
+			log "EEPROM file not found, using generic fallback"
+		fi
+
+		umount "$MNT" >/dev/null 2>&1
+	else
+		log "could not mount misc_ro, using generic fallback"
+	fi
+
+	[ -n "$attached" ] && ubidetach -d "$attached" >/dev/null 2>&1
+	return 0
+}

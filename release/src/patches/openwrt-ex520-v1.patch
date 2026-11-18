@@ -1,0 +1,589 @@
+diff --git a/package/firmware/mt7981-eeprom-default/Makefile b/package/firmware/mt7981-eeprom-default/Makefile
+new file mode 100644
+index 0000000..a99b953
+--- /dev/null
++++ b/package/firmware/mt7981-eeprom-default/Makefile
+@@ -0,0 +1,48 @@
++#
++# Copyright (C) 2026
++#
++# This is free software, licensed under the GNU General Public License v2.
++# See /LICENSE for more information.
++#
++
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=mt7981-eeprom-default
++PKG_VERSION:=1
++PKG_RELEASE:=1
++PKG_LICENSE:=BSD-3-Clause-Clear
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/mt7981-eeprom-default
++  SECTION:=firmware
++  CATEGORY:=Firmware
++  TITLE:=MediaTek MT7981 default EEPROM (MT7976 DBDC)
++  PKGARCH:=all
++endef
++
++define Package/mt7981-eeprom-default/description
++  Fallback calibration data for MT7981 + MT7976 DBDC radios. Needed on boards
++  that do not expose factory calibration through a dedicated flash partition.
++endef
++
++define Build/Compile
++endef
++
++define Package/mt7981-eeprom-default/install
++	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
++	$(INSTALL_DATA) ./files/mt7981_eeprom_mt7976_dbdc.bin \
++		$(1)/lib/firmware/mediatek/mt7981_eeprom_mt7976_dbdc.bin
++	$(INSTALL_DIR) $(1)/etc/uci-defaults
++	$(INSTALL_BIN) ./files/etc/uci-defaults/60-luci-ucode \
++		$(1)/etc/uci-defaults/60-luci-ucode
++	$(INSTALL_BIN) ./files/etc/uci-defaults/61-fw-env-config \
++		$(1)/etc/uci-defaults/61-fw-env-config
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./files/etc/init.d/mt7981-eeprom \
++		$(1)/etc/init.d/mt7981-eeprom
++	$(INSTALL_DIR) $(1)/etc/rc.d
++	ln -sf ../init.d/mt7981-eeprom $(1)/etc/rc.d/S09mt7981-eeprom
++endef
++
++$(eval $(call BuildPackage,mt7981-eeprom-default))
+diff --git a/package/firmware/mt7981-eeprom-default/files/etc/init.d/mt7981-eeprom b/package/firmware/mt7981-eeprom-default/files/etc/init.d/mt7981-eeprom
+new file mode 100644
+index 0000000..6619474
+--- /dev/null
++++ b/package/firmware/mt7981-eeprom-default/files/etc/init.d/mt7981-eeprom
+@@ -0,0 +1,97 @@
++#!/bin/sh /etc/rc.common
++# Extract the per-device MT7981 EEPROM from the TP-Link misc_ro UBI volume
++# before mt7915e is loaded. The misc_ro MTD partition is marked read-only in
++# the DTS, so UBI attaches it in read-only mode and nothing is written to flash.
++#
++# Runs at START=09, i.e. before S10boot which calls kmodloader and loads
++# mt7915e. The extracted EEPROM is placed in /lib/firmware/updates/, which the
++# firmware loader searches before /lib/firmware/.
++
++START=09
++
++FW_DIR=/lib/firmware/updates/mediatek
++FW_FILE=$FW_DIR/mt7981_eeprom_mt7976_dbdc.bin
++MNT=/tmp/misc_ro
++TAG=mt7981-eeprom
++
++log() {
++	logger -t "$TAG" "$*"
++	echo "$TAG: $*" > /dev/kmsg 2>/dev/null
++}
++
++valid_eeprom() {
++	local f="$1" size
++
++	[ -f "$f" ] || return 1
++	size=$(wc -c < "$f" 2>/dev/null) || return 1
++	[ "$size" -ge 4096 ] || return 1
++
++	dd if="$f" bs=1 count=2 2>/dev/null > /tmp/.e2p.first2
++	printf '\201\171' > /tmp/.e2p.magic
++	cmp -s /tmp/.e2p.first2 /tmp/.e2p.magic
++}
++
++find_mtd() {
++	sed -n "s/^mtd\([0-9][0-9]*\):.*\"$1\".*/\1/p" /proc/mtd | head -n1
++}
++
++boot() {
++	local idx d attached src f mnted
++
++	# Already extracted on a previous boot (persistent overlay)?
++	if valid_eeprom "$FW_FILE"; then
++		return 0
++	fi
++
++	idx=$(find_mtd misc_ro)
++	[ -n "$idx" ] || { log "misc_ro partition not found"; return 0; }
++
++	mkdir -p "$FW_DIR" "$MNT"
++
++	for d in 0 1 2 3; do
++		if ubiattach -m "$idx" -d "$d" >/dev/null 2>&1; then
++			attached="$d"
++		fi
++		if mount -t ubifs -o ro "ubi$d:misc_ro" "$MNT" >/dev/null 2>&1; then
++			mnted=1
++			break
++		fi
++		if [ -n "$attached" ]; then
++			ubidetach -d "$attached" >/dev/null 2>&1
++			attached=""
++		fi
++	done
++
++	if [ -n "$mnted" ]; then
++		# The stock driver reads /var/run/misc/misc_ro/0x003A0000
++		for f in "$MNT/0x003A0000" "$MNT/e2p"; do
++			valid_eeprom "$f" && { src="$f"; break; }
++		done
++
++		# Fallback: scan the volume root for a file with the MT7981 magic
++		if [ -z "$src" ]; then
++			for f in "$MNT"/*; do
++				[ -f "$f" ] || continue
++				valid_eeprom "$f" && { src="$f"; break; }
++			done
++		fi
++
++		if [ -n "$src" ]; then
++			if dd if="$src" of="$FW_FILE" bs=4096 count=1 >/dev/null 2>&1; then
++				sync
++				log "EEPROM extracted from $src"
++			else
++				log "failed to copy EEPROM from $src"
++			fi
++		else
++			log "EEPROM file not found, using generic fallback"
++		fi
++
++		umount "$MNT" >/dev/null 2>&1
++	else
++		log "could not mount misc_ro, using generic fallback"
++	fi
++
++	[ -n "$attached" ] && ubidetach -d "$attached" >/dev/null 2>&1
++	return 0
++}
+diff --git a/package/firmware/mt7981-eeprom-default/files/etc/uci-defaults/60-luci-ucode b/package/firmware/mt7981-eeprom-default/files/etc/uci-defaults/60-luci-ucode
+new file mode 100644
+index 0000000..cf477db
+--- /dev/null
++++ b/package/firmware/mt7981-eeprom-default/files/etc/uci-defaults/60-luci-ucode
+@@ -0,0 +1,13 @@
++#!/bin/sh
++# LuCI 24.10+ uses the ucode dispatcher. The default uhttpd config still
++# references the Lua SGI handler (/usr/lib/lua/luci/sgi/uhttpd.lua), but
++# luci-lua-runtime is not installed. Lua handlers are registered before
++# ucode handlers in uhttpd, so the broken Lua prefix would win.
++[ -f /tmp/sysinfo/board_name ] || exit 0
++[ "$(cat /tmp/sysinfo/board_name)" = "tplink,ex520-v1" ] || exit 0
++
++uci -q delete uhttpd.main.lua_prefix
++uci -q add_list uhttpd.main.ucode_prefix='/cgi-bin/luci=/usr/share/ucode/luci/uhttpd.uc'
++uci commit uhttpd
++
++exit 0
+diff --git a/package/firmware/mt7981-eeprom-default/files/etc/uci-defaults/61-fw-env-config b/package/firmware/mt7981-eeprom-default/files/etc/uci-defaults/61-fw-env-config
+new file mode 100644
+index 0000000..ba8c37b
+--- /dev/null
++++ b/package/firmware/mt7981-eeprom-default/files/etc/uci-defaults/61-fw-env-config
+@@ -0,0 +1,9 @@
++#!/bin/sh
++[ -f /tmp/sysinfo/board_name ] || exit 0
++[ "$(cat /tmp/sysinfo/board_name)" = "tplink,ex520-v1" ] || exit 0
++
++cat > /etc/fw_env.config <<EOF
++/dev/mtd1 0x0 0x20000 0x20000 8
++EOF
++
++exit 0
+diff --git a/package/firmware/mt7981-eeprom-default/files/mt7981_eeprom_mt7976_dbdc.bin b/package/firmware/mt7981-eeprom-default/files/mt7981_eeprom_mt7976_dbdc.bin
+new file mode 100644
+index 0000000000000000000000000000000000000000..109fe883690f7a759a6e242649c1703306bd763a
+GIT binary patch
+literal 4096
+zcmeHI&r1SP5FUjMDf@w;=^?sBOShnl1Q}i;x_B$<(BJTGomSuOYX6FVM3lNNcIY7D
+z;b|T^h)9>%N-ZmzSBVDd7MWS>43C-l=6l~8=CB(%1OR7n@c_f1%{FMkAJcREnDSSJ
+zU3;6`um<a^Ghe-F@keU|>CqWSfLYgvY3wG3WRK75^`TAL9o{Kn+&w8wxSfL2JuQrR
+zI?r+s>wJ$>M6_P9liMe^o%U(|R!fp3-~7^w-{uc)g?9F_l%%-@kpmlBq1^*XGM@}N
+z;qb{xHp^JKT(1WL;jpe}v!znCdUwaGMB@CMvCGS=D_$KRpPl9NrBbC52$+kTFs>Vo
+zh6%-L4{rl@_@3jWnT)P$0BJ3)B>||cX{lraBcu`FiK@0BRc&M4G89UI4m!UVp;)~}
+z6iV@$LJNsT+gYm_i=~i7Wkrd_+TCv1@V5I0UK*j_#vj<0HR3<tz)=)HjsT@J0*a!j
+ziXziQGD)e7pPvDkm=kkcCeGqaEW``(BF``u#3HZ7A|e;&50RQtCvRROx8#OAkVo_<
+pJWX;>8b*^mzxxwMjC-Sr821OGZq&?Q=)z!(bwMr2+Q6qb@B))|1l0fl
+
+literal 0
+HcmV?d00001
+
+diff --git a/target/linux/mediatek/dts/mt7981b-tplink-ex520.dts b/target/linux/mediatek/dts/mt7981b-tplink-ex520.dts
+new file mode 100644
+index 0000000..e9db2a7
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-tplink-ex520.dts
+@@ -0,0 +1,277 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++/*
++ * TP-Link EX520 v1 (AX3000, MT7981BA + MT7531AE + MT7976CN + EN8801S)
++ *
++ * Partition layout is taken from the stock TP-Link firmware (NMBM device),
++ * see the stock DTS inside the vendor FIT image.
++ */
++
++/dts-v1/;
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/pinctrl/mt65xx.h>
++
++#include "mt7981b.dtsi"
++
++/ {
++	model = "TP-Link EX520 v1";
++	compatible = "tplink,ex520-v1", "mediatek,mt7981";
++
++	aliases {
++		serial0 = &uart0;
++		label-mac-device = &gmac0;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@40000000 {
++		device_type = "memory";
++		reg = <0 0x40000000 0 0x10000000>;
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++		};
++
++		button-wps {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		/* GPIO map recovered from the stock tp_gpio.ko LED table */
++		led-power {
++			label = "green:power";
++			gpios = <&pio 4 GPIO_ACTIVE_LOW>;
++			default-state = "on";
++		};
++
++		led-internet {
++			label = "green:internet";
++			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
++		};
++
++		led-internet2 {
++			label = "green:internet2";
++			gpios = <&pio 5 GPIO_ACTIVE_LOW>;
++		};
++
++		led-wlan2g {
++			label = "green:wlan2g";
++			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
++		};
++
++		led-wlan5g {
++			label = "green:wlan5g";
++			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
++		};
++
++		led-wps {
++			label = "green:wps";
++			gpios = <&pio 6 GPIO_ACTIVE_LOW>;
++		};
++
++		led-lan {
++			label = "green:lan";
++			gpios = <&pio 8 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&eth {
++	status = "okay";
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "2500base-x";
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++
++	gmac1: mac@1 {
++		compatible = "mediatek,eth-mac";
++		reg = <1>;
++		phy-mode = "gmii";
++		phy-handle = <&wan_phy>;
++		label = "wan";
++	};
++};
++
++&mdio_bus {
++	switch: switch@1f {
++		compatible = "mediatek,mt7531";
++		reg = <31>;
++		/* GPIO 39 resets the MT7531 and (shared) the EN8801S WAN PHY */
++		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++	};
++
++	wan_phy: ethernet-phy@0 {
++		/* Airoha EN8801S, ID is auto-detected (0x03a2.9461/9471) */
++		reg = <0>;
++		phy-mode = "gmii";
++	};
++};
++
++&switch {
++	ports {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		port@0 {
++			reg = <0>;
++			label = "lan1";
++		};
++
++		port@1 {
++			reg = <1>;
++			label = "lan2";
++		};
++
++		port@2 {
++			reg = <2>;
++			label = "lan3";
++		};
++
++		port@3 {
++			reg = <3>;
++			label = "lan4";
++		};
++
++		port@6 {
++			reg = <6>;
++			ethernet = <&gmac0>;
++			phy-mode = "2500base-x";
++
++			fixed-link {
++				speed = <2500>;
++				full-duplex;
++				pause;
++			};
++		};
++	};
++};
++
++&pio {
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++		};
++
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++		};
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	spi_nand: flash@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		mediatek,nmbm;
++		mediatek,bmt-max-ratio = <1>;
++		mediatek,bmt-max-reserved-blocks = <64>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "boot";
++				reg = <0x0000000 0x0200000>;
++				read-only;
++			};
++
++			partition@200000 {
++				label = "u-boot-env";
++				reg = <0x0200000 0x0100000>;
++			};
++
++			partition@300000 {
++				label = "misc_ro";
++				reg = <0x0300000 0x0600000>;
++				read-only;
++			};
++
++			partition@900000 {
++				label = "misc_rw";
++				reg = <0x0900000 0x0600000>;
++			};
++
++			partition@f00000 {
++				label = "ubi0";
++				reg = <0x0f00000 0x2800000>;
++			};
++
++			partition@3700000 {
++				label = "ubi1";
++				reg = <0x3700000 0x2800000>;
++				read-only;
++			};
++
++			partition@5f00000 {
++				label = "misc_rw_bak";
++				reg = <0x5f00000 0x0600000>;
++				read-only;
++			};
++
++			partition@6500000 {
++				label = "bflag";
++				reg = <0x6500000 0x0600000>;
++				read-only;
++			};
++
++			partition@6b00000 {
++				label = "misc_isp";
++				reg = <0x6b00000 0x0600000>;
++				read-only;
++			};
++		};
++	};
++};
++
++&wifi {
++	status = "okay";
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+index a39142a..0783e54 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+@@ -407,6 +407,12 @@ tplink,be450-ubi)
+ 	ucidef_set_led_netdev "wlan2g" "WLAN2G" "blue:wlan-2ghz" "phy0.0-ap0"
+ 	ucidef_set_led_netdev "wlan5g" "WLAN5G" "blue:wlan-5ghz" "phy0.1-ap0"
+ 	;;
++tplink,ex520-v1)
++	ucidef_set_led_netdev "lan" "LAN" "green:lan" "br-lan" "link tx rx"
++	ucidef_set_led_netdev "wan" "WAN" "green:internet" "wan" "link tx rx"
++	ucidef_set_led_netdev "wlan2g" "WLAN2G" "green:wlan2g" "phy0-ap0"
++	ucidef_set_led_netdev "wlan5g" "WLAN5G" "green:wlan5g" "phy1-ap0"
++	;;
+ tplink,fr365-v1)
+ 	ucidef_set_led_netdev "port2-green-act" "port-2" "green:port2_act" "port2" "link tx rx"
+ 	ucidef_set_led_netdev "port1-green-act" "port-1" "green:sfp" "port1" "link tx rx"
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index baa61f2..120224a 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -244,6 +244,9 @@ mediatek_setup_interfaces()
+ 	tenda,be12-pro)
+ 		ucidef_set_interfaces_lan_wan "lan3 lan4 lan5 eth1" eth2
+ 		;;
++	tplink,ex520-v1)
++		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" wan
++		;;
+ 	tplink,fr365-v1)
+ 		ucidef_set_interfaces_lan_wan "port1 port3 port4 port5 port6" "port2"
+ 		;;
+@@ -396,6 +399,13 @@ mediatek_setup_macs()
+ 		label_mac=$(get_mac_binary "/tmp/factory/default-mac" 0)
+ 		lan_mac=$label_mac
+ 		;;
++	tplink,ex520-v1)
++		label_mac=$(mtd_get_mac_ascii u-boot-env labelMac)
++		[ -n "$label_mac" ] && {
++			lan_mac=$label_mac
++			wan_mac=$(macaddr_add "$label_mac" 1)
++		}
++		;;
+ 	tplink,fr365-v1)
+ 		lan_mac=$(strings /dev/mtd11 | grep 'option macaddr' | awk -F"'" '{print $2}')
+ 		wan_mac="$(macaddr_add $lan_mac 1)"
+diff --git a/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac b/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+index a25bd17..0b9f244 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
++++ b/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+@@ -300,6 +300,7 @@ case "$board" in
+ 		[ "$PHYNBR" = "1" ] && macaddr_add $addr 3 > /sys${DEVPATH}/macaddress
+ 		;;
+ 	tplink,eap683-lr|\
++	tplink,ex520-v1|\
+ 	tplink,f65-v1)
+ 		addr=$(get_mac_label)
+ 		[ "$PHYNBR" = "0" ] && echo $addr > /sys${DEVPATH}/macaddress
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index 9dd88a8..a288361 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -355,6 +355,11 @@ platform_do_upgrade() {
+ 		CI_UBIPART="ubi0"
+ 		nand_do_upgrade "$1"
+ 		;;
++	tplink,ex520-v1)
++		CI_UBIPART="ubi0"
++		fw_setenv bootcmd 'ubi part ubi0; ubi read 0x46000000 kernel; bootm 0x46000000'
++		nand_do_upgrade "$1"
++		;;
+ 	ltc,vl7m19k)
+ 		mtk_dual_boot_flash_both_slots "$1"
+ 		# clear any marker the bootloader set after failing to verify
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 5e19029..8820f60 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -3871,6 +3871,19 @@ define Device/tplink_fr365-v1
+ endef
+ TARGET_DEVICES += tplink_fr365-v1
+ 
++define Device/tplink_ex520-v1
++  DEVICE_VENDOR := TP-Link
++  DEVICE_MODEL := EX520
++  DEVICE_VARIANT := v1
++  DEVICE_DTS := mt7981b-tplink-ex520
++  DEVICE_DTS_DIR := ../dts
++  KERNEL_INITRAMFS := kernel-bin | lzma | \
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
++  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware \
++	kmod-leds-gpio kmod-gpio-button-hotplug mt7981-eeprom-default
++endef
++TARGET_DEVICES += tplink_ex520-v1
++
+ define Device/tplink-tl-7dr-common
+   DEVICE_VENDOR := TP-Link
+   DEVICE_DTS_DIR := ../dts

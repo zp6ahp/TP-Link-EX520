@@ -1,0 +1,10 @@
+This project contains device support code for OpenWrt.
+
+The OpenWrt project is licensed under the GNU General Public License v2.0.
+The device tree source and build integration files in this repository are
+provided under the same terms (GPL-2.0-only) unless stated otherwise.
+
+The generic MT7981 EEPROM blob in
+package/firmware/mt7981-eeprom-default/files/mt7981_eeprom_mt7976_dbdc.bin
+originates from the OpenWrt mt76 firmware package and is distributed under
+the BSD-3-Clause-Clear license (see the mt76 project).

@@ -1,0 +1,13 @@
+#!/bin/sh
+# LuCI 24.10+ uses the ucode dispatcher. The default uhttpd config still
+# references the Lua SGI handler (/usr/lib/lua/luci/sgi/uhttpd.lua), but
+# luci-lua-runtime is not installed. Lua handlers are registered before
+# ucode handlers in uhttpd, so the broken Lua prefix would win.
+[ -f /tmp/sysinfo/board_name ] || exit 0
+[ "$(cat /tmp/sysinfo/board_name)" = "tplink,ex520-v1" ] || exit 0
+
+uci -q delete uhttpd.main.lua_prefix
+uci -q add_list uhttpd.main.ucode_prefix='/cgi-bin/luci=/usr/share/ucode/luci/uhttpd.uc'
+uci commit uhttpd
+
+exit 0

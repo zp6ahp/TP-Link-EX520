@@ -1,0 +1,277 @@
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
+/*
+ * TP-Link EX520 v1 (AX3000, MT7981BA + MT7531AE + MT7976CN + EN8801S)
+ *
+ * Partition layout is taken from the stock TP-Link firmware (NMBM device),
+ * see the stock DTS inside the vendor FIT image.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/pinctrl/mt65xx.h>
+
+#include "mt7981b.dtsi"
+
+/ {
+	model = "TP-Link EX520 v1";
+	compatible = "tplink,ex520-v1", "mediatek,mt7981";
+
+	aliases {
+		serial0 = &uart0;
+		label-mac-device = &gmac0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x10000000>;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		button-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+		};
+
+		button-wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		/* GPIO map recovered from the stock tp_gpio.ko LED table */
+		led-power {
+			label = "green:power";
+			gpios = <&pio 4 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+		};
+
+		led-internet {
+			label = "green:internet";
+			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
+		};
+
+		led-internet2 {
+			label = "green:internet2";
+			gpios = <&pio 5 GPIO_ACTIVE_LOW>;
+		};
+
+		led-wlan2g {
+			label = "green:wlan2g";
+			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
+		};
+
+		led-wlan5g {
+			label = "green:wlan5g";
+			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
+		};
+
+		led-wps {
+			label = "green:wps";
+			gpios = <&pio 6 GPIO_ACTIVE_LOW>;
+		};
+
+		led-lan {
+			label = "green:lan";
+			gpios = <&pio 8 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&watchdog {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+
+	gmac0: mac@0 {
+		compatible = "mediatek,eth-mac";
+		reg = <0>;
+		phy-mode = "2500base-x";
+
+		fixed-link {
+			speed = <2500>;
+			full-duplex;
+			pause;
+		};
+	};
+
+	gmac1: mac@1 {
+		compatible = "mediatek,eth-mac";
+		reg = <1>;
+		phy-mode = "gmii";
+		phy-handle = <&wan_phy>;
+		label = "wan";
+	};
+};
+
+&mdio_bus {
+	switch: switch@1f {
+		compatible = "mediatek,mt7531";
+		reg = <31>;
+		/* GPIO 39 resets the MT7531 and (shared) the EN8801S WAN PHY */
+		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
+	};
+
+	wan_phy: ethernet-phy@0 {
+		/* Airoha EN8801S, ID is auto-detected (0x03a2.9461/9471) */
+		reg = <0>;
+		phy-mode = "gmii";
+	};
+};
+
+&switch {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			label = "lan1";
+		};
+
+		port@1 {
+			reg = <1>;
+			label = "lan2";
+		};
+
+		port@2 {
+			reg = <2>;
+			label = "lan3";
+		};
+
+		port@3 {
+			reg = <3>;
+			label = "lan4";
+		};
+
+		port@6 {
+			reg = <6>;
+			ethernet = <&gmac0>;
+			phy-mode = "2500base-x";
+
+			fixed-link {
+				speed = <2500>;
+				full-duplex;
+				pause;
+			};
+		};
+	};
+};
+
+&pio {
+	spi0_flash_pins: spi0-pins {
+		mux {
+			function = "spi";
+			groups = "spi0", "spi0_wp_hold";
+		};
+
+		conf-pu {
+			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
+			drive-strength = <MTK_DRIVE_8mA>;
+		};
+
+		conf-pd {
+			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
+			drive-strength = <MTK_DRIVE_8mA>;
+		};
+	};
+};
+
+&spi0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi0_flash_pins>;
+	status = "okay";
+
+	spi_nand: flash@0 {
+		compatible = "spi-nand";
+		reg = <0>;
+
+		spi-max-frequency = <52000000>;
+		spi-tx-bus-width = <4>;
+		spi-rx-bus-width = <4>;
+
+		mediatek,nmbm;
+		mediatek,bmt-max-ratio = <1>;
+		mediatek,bmt-max-reserved-blocks = <64>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "boot";
+				reg = <0x0000000 0x0200000>;
+				read-only;
+			};
+
+			partition@200000 {
+				label = "u-boot-env";
+				reg = <0x0200000 0x0100000>;
+			};
+
+			partition@300000 {
+				label = "misc_ro";
+				reg = <0x0300000 0x0600000>;
+				read-only;
+			};
+
+			partition@900000 {
+				label = "misc_rw";
+				reg = <0x0900000 0x0600000>;
+			};
+
+			partition@f00000 {
+				label = "ubi0";
+				reg = <0x0f00000 0x2800000>;
+			};
+
+			partition@3700000 {
+				label = "ubi1";
+				reg = <0x3700000 0x2800000>;
+				read-only;
+			};
+
+			partition@5f00000 {
+				label = "misc_rw_bak";
+				reg = <0x5f00000 0x0600000>;
+				read-only;
+			};
+
+			partition@6500000 {
+				label = "bflag";
+				reg = <0x6500000 0x0600000>;
+				read-only;
+			};
+
+			partition@6b00000 {
+				label = "misc_isp";
+				reg = <0x6b00000 0x0600000>;
+				read-only;
+			};
+		};
+	};
+};
+
+&wifi {
+	status = "okay";
+};

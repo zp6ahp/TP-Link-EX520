@@ -1,0 +1,9 @@
+#!/bin/sh
+[ -f /tmp/sysinfo/board_name ] || exit 0
+[ "$(cat /tmp/sysinfo/board_name)" = "tplink,ex520-v1" ] || exit 0
+
+cat > /etc/fw_env.config <<EOF
+/dev/mtd1 0x0 0x20000 0x20000 8
+EOF
+
+exit 0
