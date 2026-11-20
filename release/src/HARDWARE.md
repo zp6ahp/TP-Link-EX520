@@ -1,15 +1,15 @@
-# TP-Link EX520 v1 — аппаратные данные
+# TP-Link EX520 v1 — Hardware Notes
 
-## Платформа
+## Platform
 
 - SoC: MediaTek MT7981BA (Filogic 820)
-- RAM: 256 МиБ
-- Flash: 128 МиБ SPI NAND, NMBM
+- RAM: 256 MiB
+- Flash: 128 MiB SPI NAND, NMBM
 - Switch: MT7531AE (4×LAN)
 - WAN PHY: Airoha EN8801S (MDIO addr 0, GMII)
-- Wi-Fi: MT7976CN DBDC (2.4 + 5 ГГц)
+- Wi-Fi: MT7976CN DBDC (2.4 + 5 GHz)
 
-## Разделы NAND (из U-Boot env `mtdparts`)
+## NAND partitions (from the U-Boot env `mtdparts`)
 
 | # | label        | offset    | size  |
 |---|--------------|-----------|-------|
@@ -23,42 +23,42 @@
 | 7 | bflag        | 0x6500000 | 6 MiB |
 | 8 | misc_isp     | 0x6B00000 | 6 MiB |
 
-MAC берётся из `u-boot-env`: `labelMac=AC:A7:F1:68:B3:67`.
+The MAC address is stored in `u-boot-env`: `labelMac=AC:A7:F1:68:B3:67`.
 
-## Светодиоды
+## LEDs
 
-Восстановлено из неужатого `tp_gpio.ko` (таблица `tp_led_def`, структура 0x30 байт:
-`char name[4]; u8 gpio; u8 mode; u8 speed; u8 reve; ...`).
-Все светодиоды **active-low** (`reve = 0`), проверено по формуле драйвера
+Recovered from the unstripped `tp_gpio.ko` (`tp_led_def` table, 0x30-byte
+structure: `char name[4]; u8 gpio; u8 mode; u8 speed; u8 reve; ...`).
+All LEDs are **active-low** (`reve = 0`), verified against the driver formula
 `gpiod_set_raw_value(gpio, !value ^ reve)`.
 
-| Имя  | GPIO | Назначение        |
+| Name | GPIO | Function          |
 |------|------|-------------------|
-| POWR | 4    | питание           |
-| INET | 7    | интернет          |
-| INE2 | 5    | интернет (второй) |
-| WL2G | 35   | Wi-Fi 2.4 ГГц     |
-| WL5G | 34   | Wi-Fi 5 ГГц       |
+| POWR | 4    | power             |
+| INET | 7    | internet          |
+| INE2 | 5    | internet (second) |
+| WL2G | 35   | Wi-Fi 2.4 GHz     |
+| WL5G | 34   | Wi-Fi 5 GHz       |
 | WPS  | 6    | WPS               |
 | LAN  | 8    | LAN               |
 
-В стоковом `etc/config.bba`: `INCLUDE_TP_GPIO_LED_DUAL_INET=y`,
-`INCLUDE_TP_GPIO_LED_WL_DOUBLE=y` — отсюда два «интернет»-светодиода.
+The stock `etc/config.bba` has `INCLUDE_TP_GPIO_LED_DUAL_INET=y` and
+`INCLUDE_TP_GPIO_LED_WL_DOUBLE=y` — hence the two internet LEDs.
 
-## Кнопки
+## Buttons
 
-Совпадают со стоковым DTS и таблицей `tp_btn_def`:
+Matches the stock DTS and the `tp_btn_def` table:
 
-| Кнопка | GPIO | Код          |
-|--------|------|--------------|
-| Reset  | 1    | KEY_RESTART  |
-| WPS    | 0    | KEY_WPS_BUTTON |
+| Button | GPIO | Code          |
+|--------|------|---------------|
+| Reset  | 1    | KEY_RESTART   |
+| WPS    | 0    | KEY_WPS_BUTTON|
 
-Обе **active-low**.
+Both are **active-low**.
 
-## Прочее
+## Notes
 
-- Reset MT7531 и EN8801S: GPIO 39 (active-high, общий).
-- Реальная калибровка Wi-Fi лежит в `misc_ro` → UBI-том `e2p`.
-  До её получения используется `mt7981_eeprom_mt7976_dbdc.bin`
-  (пакет `mt7981-eeprom-default`).
+- MT7531 and EN8801S reset: GPIO 39 (active-high, shared).
+- The real Wi-Fi calibration is stored in `misc_ro` → UBI volume `e2p`.
+  Until it is extracted, `mt7981_eeprom_mt7976_dbdc.bin` is used
+  (package `mt7981-eeprom-default`).
